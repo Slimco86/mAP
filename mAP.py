@@ -10,11 +10,13 @@ from torch.utils.data import Dataset, DataLoader
 
 class Mapper():
     def __init__(self,model_path,data_path,true_labels,pred_labels,n_classes=5):
+        self.n_classes = n_classes
         self.threshold = list(np.arange(0,1,0.1))
         #self.counts = {cls:[] for cls in range(n_classes)}
         self.counts = {tr:{cls:[] for cls in range(n_classes)} for tr in self.threshold}
         self.dataset = self.Load_Dataset(data_path)
         self.model = Load_Model(model_path)
+        self.MAP={}
     
     def Load_Model(self,path):
         model = torch.load(path)
@@ -88,7 +90,17 @@ class Mapper():
         accuracy = TP/len(self.counts[cls])
         return (precision, recall, accuracy)
 
-    def AP(self,cls,threshold):
+    def Calc_mAP(self):
+        assert len(self.counts[0])>0,print('First analize the dataset')
+        for threshold in self.threshold:
+            if threshold not in self.MAP.keys():
+                self.MAP[threshold]={}
+            for cls in self.n_classes:
+                p,r = self.AP(cls,threshold)
+                self.MAP[threshold][cls]=(p,r)
+
+
+    def AP(self,cls,threshold,graph=False):
         TP_tot = self.counts[threshold][cls].count('TP')
         TP = 0
         FP = 0
@@ -112,17 +124,18 @@ class Mapper():
             else:
                 precision.append(TP/(q+1))
             """
-        print(recall,precision)
-        plt.plot(recall,precision)
-        plt.scatter(recall,precision)
-        plt.xlim([0,1.2])
-        plt.ylim([0,1.2])
-        plt.xlabel('Recall')
-        plt.ylabel('Precision')
-        plt.title(f'Class: {cls}')       
-        
-        plt.show()
-        return
+        if graph:
+            print(recall,precision)
+            plt.plot(recall,precision)
+            plt.scatter(recall,precision)
+            plt.xlim([0,1.2])
+            plt.ylim([0,1.2])
+            plt.xlabel('Recall')
+            plt.ylabel('Precision')
+            plt.title(f'Class: {cls}')       
+
+            plt.show()
+        return (precision,recall)
             
 
 
