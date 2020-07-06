@@ -14,10 +14,10 @@ class Mapper():
         self.nms_threshold = nms_threshold
         self.threshold = list(np.arange(0,1.1,0.1))
         self.counts = {cls:{'Value':[],'Score':[]} for cls in range(n_classes)}
-        #self.counts = {tr:{cls:[] for cls in range(n_classes)} for tr in self.threshold}
-        self.model = self.Load_Model(model_path)
-        self.dataset = self.Load_Dataset(data_path)
+        #self.model = self.Load_Model(model_path)
+        #self.dataset = self.Load_Dataset(data_path)
         self.MAP={}
+        self.classes = ['Bad Walls','Dust','Tee','Spiral Weld','Girth Weld']
     
     def Load_Model(self,path):
         if not torch.cuda.is_available():
@@ -52,6 +52,10 @@ class Mapper():
         iou = np.round(interArea / (boxAArea + np.transpose(boxBArea) - interArea),3)
         return iou
     
+    def Load_Predictions(self,path):
+        with open(path,'rb') as f:
+           self.counts=pickle.load(f)
+
     def Check_Img(self,ground_truth,preds):
         true_cls = ground_truth[:,-1] # get list of correct classes
         pred_cls = preds[:,-2] # get list of predicted classes
@@ -89,71 +93,115 @@ class Mapper():
             else:  # inference on CPU
                 score,clas,box = self.model(sample['img'])
                 box,clas,score = box.detach().numpy(),clas.detach().numpy(),score.detach().numpy() # Convert results to numpy
-            preds = np.concatenate((box,clas[:,np.newaxis],score[:,np.newaxis]),axis=1)     # concatenate results into predictions      
-            #for threshold in self.threshold:  #  fore each score threshold calculate recal-precision
-                #trunc_pred = preds[preds[:,-1]>=threshold]  
+            preds = np.concatenate((box,clas[:,np.newaxis],score[:,np.newaxis]),axis=1)     # concatenate results into predictions       
             self.Check_Img(ground_truth,preds)
-
         with open('results.pkl','wb') as f:
             pickle.dump(self.counts,f)
 
+    def Sort_Predictions(self):
+        """ Sort the predictions with ascending confidence score"""
+        print('Sorting predictions')
+        for cls in self.counts.keys():
+            values = self.counts[cls]['Value']
+            scores = self.counts[cls]['Score']
+            ziped = zip(scores,values)
+            sorted_pairs = sorted(ziped)
+            tuples = zip(*sorted_pairs)
 
-    def Get_Metrics(self,cls,threshold):
-        TP = self.counts[threshold][cls].count('TP')
-        FP = self.counts[threshold][cls].count('FP')
-        FN = self.counts[threshold][cls].count('FN')
-        if TP == 0:
-            return (0,0,0)
-        precision = TP/(TP+FP)
-        recall = TP/(TP+FN)
-        accuracy = TP/len(self.counts[cls])
-        return (precision, recall, accuracy)
+            sc, val = [list(tuple) for tuple in tuples]
+            self.counts[cls]['Value'] = list(reversed(val))
+            self.counts[cls]['Score'] = list(reversed(sc))
+
+
+
+    def Get_Metrics(self):
+        """Get global precission, recall, accuracy scores"""
+        print('Class:\t\tPrecision:\t\tRecall:\t\tAccuracy"')
+        for cls in self.counts.keys():
+            TP = self.counts[cls]['Value'].count('TP')
+            FP = self.counts[cls]['Value'].count('FP')
+            FN = self.counts[cls]['Value'].count('FN')
+            if TP == 0:
+                return (0,0,0)
+            precision = TP/(TP+FP)
+            recall = TP/(TP+FN)
+            accuracy = TP/(TP+FN+FP)
+            
+            print(f'{self.classes[cls]}\t\t{precision}\t\t{recall}\t\t{accuracy}')
+            
 
     def Calc_mAP(self):
-        assert len(self.counts[0])>0,print('First analize the dataset')
-        for threshold in self.threshold:
-            if threshold not in self.MAP.keys():
-                self.MAP[threshold]={}
-            for cls in self.n_classes:
-                p,r = self.AP(cls,threshold)
-                self.MAP[threshold][cls]=(p,r)
+        self.PR = {cls:{'P':[],'R':[]} for cls in self.counts.keys()}
+        ap = {cls:None for cls in self.counts.keys()}
+        for cls in self.counts.keys():
+            query = 1
+            TP,FP,FN = 0,0,0
+            TP_tot = self.counts[cls]['Value'].count('TP')+self.counts[cls]['Value'].count('FN')
+            for val,sc in tqdm(zip(self.counts[cls]['Value'],self.counts[cls]['Score'])):
+                if val == 'TP':
+                    TP+=1
+                elif val == 'FN':
+                    FN+=1
+                elif val == 'FP':
+                    FP+=1
+                pr = TP/query
+                rec = TP/TP_tot
+                self.PR[cls]['P'].append(pr)
+                self.PR[cls]['R'].append(rec)
+                query+=1
 
+            # Smoothing PR curve
+            old_ind = 0
+            new_p = []
+            while old_ind<len(self.PR[cls]['P']):
+                mval = max(self.PR[cls]['P'][old_ind:])
+                new_ind = self.PR[cls]['P'][old_ind:].index(mval)
+                for _ in range(new_ind+1):
+                    new_p.append(mval)
+                old_ind+=new_ind+1
+            self.PR[cls]['P'] = new_p
+        
+            diff = [self.PR[cls]['R'][i]-self.PR[cls]['R'][i-1] for i in range(1,len(self.PR[cls]['R']))]
+            ap[cls] = np.sum(np.array(self.PR[cls]['P'][1:])*np.array(diff))
+        print(f'mAP score: {round(sum([i for i in ap.values()])/self.n_classes,2)}')
 
-    def AP(self,cls,threshold,graph=False):
-        TP_tot = self.counts[threshold][cls].count('TP')
-        TP = 0
-        FP = 0
-        FN = 0
-        precision = [1]
-        recall = [0]
-        for q,pred in enumerate(self.counts[threshold][cls]):
+    def Display_AP(self):
+        
+        colors = ['r','orange','g','c','b']
+        markers = ['o','v','*','1','s']
+
+        for cls in self.PR.keys():
+            lab = False
+            pr = self.PR[cls]['P']
+            rec = self.PR[cls]['R']
+            if not lab:
+                plt.scatter(rec,pr,c=colors[cls],marker=markers[cls],label=self.classes[cls])
+                lab = True
+            else:
+                plt.scatter(rec,pr,c=colors[cls],marker=markers[cls])
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.tick_params(direction='in', length=6, width=3, colors='r',
+                       grid_color='r', grid_alpha=0.2)
+        plt.title('ROC curve')
+        plt.xticks(np.arange(0,1.1,0.1))
+        plt.yticks(np.arange(0,1.1,0.1))
+        plt.legend()
+        plt.show()
             
-            if pred == 'TP':
-                TP+=1
-            recall.append(TP/TP_tot)
-            precision.append(TP/(q+1))
 
-        if graph:
-            print(recall,precision)
-            plt.plot(recall,precision)
-            plt.scatter(recall,precision)
-            plt.xlim([0,1.2])
-            plt.ylim([0,1.2])
-            plt.xlabel('Recall')
-            plt.ylabel('Precision')
-            plt.title(f'Class: {cls}')       
-
-            plt.show()
-        return (precision,recall)
-            
-
-
+    def Summary(self):
+        for cls in self.counts.keys():
+            print(f'{self.classes[cls]} total number of positive samples: {self.counts[cls]["Value"].count("TP")+self.counts[cls]["Value"].count("FN")}')
 
 if __name__ == '__main__':
     model_path = '/media/linfile1/users/ivoloshenko/Documents/Repositories/efficientdet-torch/trained_models/b0/RoVis_efficientdet_yolo.pth'
     data_path = '/media/linfile1/users/ivoloshenko/Documents/RoVis/Datasets/Object_detection/YOLO_DATA/with_art_data/test2'
- 
     maper = Mapper(model_path,data_path,n_classes=5)
-    maper.Check_Dataset()
-    print(maper.Get_Metrics(1,0.5))
-    maper.AP(1,0.5)
+    maper.Load_Predictions('./results.pkl')
+    maper.Sort_Predictions()
+    maper.Summary()
+    maper.Get_Metrics()
+    maper.Calc_mAP()
+    maper.Display_AP()
+
