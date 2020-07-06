@@ -1,0 +1,5 @@
+Bad_Walls total number of positive samples: 	568
+Dust total number of positive samples: 		875
+Tee total number of positive samples: 		249
+Spiral Weld total number of positive samples: 	265
+Girth Weld total number of positive samples: 	465
